@@ -1,0 +1,156 @@
+service: sls-workshop-${self:custom.name}
+
+plugins:
+  - serverless-pseudo-parameters
+  - serverless-iam-roles-per-function
+
+custom:
+  name: <INSERT NAME HERE>
+  email: <INSERT EMAIL HERE>
+  stage: ${opt:stage, self:provider.stage}
+  serverless-iam-roles-per-function:
+    defaultInherit: true
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  stage: dev
+  region: eu-west-1
+
+functions:
+  get-index:
+    handler: functions/get-index.handler
+    events:
+      - http:
+          path: /
+          method: get
+    environment:
+      restaurants_api: 
+        Fn::Join:
+          - ''
+          - - "https://"
+            - Ref: ApiGatewayRestApi
+            - ".execute-api.#{AWS::Region}.amazonaws.com/${self:custom.stage}/restaurants"
+      orders_api: 
+        Fn::Join:
+          - ''
+          - - "https://"
+            - Ref: ApiGatewayRestApi
+            - ".execute-api.${self:provider.region}.amazonaws.com/${self:custom.stage}/orders"
+
+  get-restaurants:
+    handler: functions/get-restaurants.handler
+    events:
+      - http:
+          path: /restaurants/
+          method: get
+    environment:
+      restaurants_table: !Ref restaurantsTable
+    iamRoleStatements:
+      - Effect: Allow
+        Action: dynamodb:scan
+        Resource: !GetAtt restaurantsTable.Arn
+
+  search-restaurants:
+    handler: functions/search-restaurants.handler
+    events:
+      - http:
+          path: /restaurants/search
+          method: post
+    environment:
+      restaurants_table: !Ref restaurantsTable
+    iamRoleStatements:
+      - Effect: Allow
+        Action: dynamodb:scan
+        Resource: !GetAtt restaurantsTable.Arn
+
+  place-order:
+    handler: functions/place-order.handler
+    events:
+      - http:
+          path: /orders
+          method: post
+    environment:
+      order_events_stream: !Ref orderEventsStream
+    iamRoleStatements:
+      - Effect: Allow
+        Action: kinesis:PutRecord
+        Resource: !GetAtt orderEventsStream.Arn
+
+  notify-restaurant:
+    handler: functions/notify-restaurant.handler
+    events:
+      - stream:
+          type: kinesis
+          arn: !GetAtt orderEventsStream.Arn
+    environment:
+      order_events_stream: !Ref orderEventsStream
+      restaurant_notification_topic: !Ref restaurantNotificationTopic
+    iamRoleStatements:
+      - Effect: Allow
+        Action: kinesis:PutRecord
+        Resource: !GetAtt orderEventsStream.Arn
+      - Effect: Allow
+        Action: sns:Publish
+        Resource: !Ref restaurantNotificationTopic
+
+  seed-restaurants:
+    handler: functions/seed-restaurants.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action: dynamodb:BatchWriteItem
+        Resource: !GetAtt restaurantsTable.Arn
+    environment:
+      restaurants_table: !Ref restaurantsTable
+
+resources:
+  Transform: AWS::Serverless-2016-10-31
+  Resources:
+    restaurantsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: name
+            AttributeType: S
+        KeySchema:
+          - AttributeName: name
+            KeyType: HASH
+
+    orderEventsStream:
+      Type: AWS::Kinesis::Stream
+      Properties: 
+        Name: orders-${self:custom.stage}-${self:custom.name}
+        ShardCount: 1
+
+    restaurantNotificationTopic:
+      Type: AWS::SNS::Topic
+      Properties: 
+        DisplayName: restaurants-${self:custom.stage}-${self:custom.name}
+        TopicName: restaurants-${self:custom.stage}-${self:custom.name}
+
+    mySubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        Endpoint: ${self:custom.email}
+        Protocol: email
+        TopicArn: !Ref restaurantNotificationTopic
+
+    LambdaInvocationCustomResource:
+      Type: AWS::Serverless::Application
+      Properties:
+        Location:
+          ApplicationId: arn:aws:serverlessrepo:us-east-1:374852340823:applications/lambda-invocation-cfn-custom-resource
+          SemanticVersion: 1.4.0
+
+    # custom resource to invoke the seed-restaurants function during deployment
+    InvokeSeedRestaurants:
+      Type: Custom::LambdaInvocation
+      DependsOn:
+        - SeedDashrestaurantsLambdaFunction
+        - LambdaInvocationCustomResource
+      Properties:
+        ServiceToken: !GetAtt LambdaInvocationCustomResource.Outputs.FunctionArn
+        FunctionName: !Ref SeedDashrestaurantsLambdaFunction
+        Payload: {}
+        When: Create
