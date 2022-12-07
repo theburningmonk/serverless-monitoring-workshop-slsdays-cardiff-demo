@@ -11,7 +11,7 @@
   "author": "Yan Cui (theburningmonk@gmail.com)",
   "license": "MIT",
   "devDependencies": {
-    "serverless": "^1.62.0",
+    "serverless": "^3.25.1",
     "serverless-iam-roles-per-function": "^2.0.2",
     "serverless-pseudo-parameters": "^2.5.0"
   },
